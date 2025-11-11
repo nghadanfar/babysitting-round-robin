@@ -17,7 +17,7 @@
   .panel{ background:var(--panel); border:1px solid var(--soft); border-radius:16px; padding:14px }
   .row{ display:grid; grid-template-columns:1fr 1fr; gap:8px }
   label{ display:block; color:var(--muted); font-size:12px; margin-bottom:6px }
-  input,button{ width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--soft); background:#ffffff; color:var(--text); outline:none }
+  input,button{ width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--soft); background:#ffffff; color:#0b1220; outline:none }
   button{ cursor:pointer; font-weight:600 }
   .btn{ background:var(--accent); color:#083344; border:0 }
   .btn.secondary{ background:#e5e7eb; color:#111827 }
@@ -46,9 +46,25 @@
   .monthbar h2{ margin:0; font-size:20px }
   .nav{ display:flex; align-items:center; gap:10px; flex-wrap:wrap }
   .nav .btn.small{ padding:6px 12px; font-size:13px; border-radius:8px }
+
+  /* ===== Mobile tweaks ===== */
   @media (max-width: 900px){
-    main{ grid-template-columns: 1fr; }
+    main{ grid-template-columns: 1fr; padding: 12px }
+    .calendar{ gap:10px }
+    .cell{ min-height: 130px; padding: 12px }
+    #left .panel{ padding:12px }
+    .chips{ overflow-x:auto; flex-wrap:nowrap; -webkit-overflow-scrolling: touch }
+    .chip{ white-space:nowrap }
   }
+
+  /* ===== Bottom-sheet editor for mobile ===== */
+  .sheet{ position: fixed; left:0; right:0; bottom:-100%; background:#ffffff; border-top:1px solid var(--soft); box-shadow:0 -8px 30px rgba(0,0,0,.12); transition: bottom .25s ease; z-index:50; }
+  .sheet.open{ bottom:0 }
+  .sheet .inner{ padding:16px; max-width:700px; margin:0 auto }
+  .sheet h3{ margin:0 0 8px; font-size:16px }
+  .row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px }
+  .pill.btn{ justify-content:center; cursor:pointer }
+  .btnbar{ display:flex; gap:10px; margin-top:12px }
 </style>
 </head>
 <body>
@@ -104,6 +120,28 @@
   </main>
 
   <div class="toaster" id="toaster"></div>
+
+  <!-- Mobile bottom-sheet editor -->
+  <div class="sheet" id="editor">
+    <div class="inner">
+      <h3 id="edTitle">Edit</h3>
+      <div class="row2">
+        <div>
+          <label>Date-night couple</label>
+          <div id="edCouples" class="chips"></div>
+        </div>
+        <div>
+          <label>Sitter (must be different couple)</label>
+          <div id="edSitters" class="chips"></div>
+        </div>
+      </div>
+      <div class="btnbar">
+        <button class="btn" id="edSave">Save</button>
+        <button class="btn secondary" id="edClear">Clear</button>
+        <button class="btn secondary" id="edClose">Close</button>
+      </div>
+    </div>
+  </div>
 
 <script>
 // =================== DATA ===================
@@ -244,7 +282,14 @@ function buildCalendarGrid(dt){
     cell.appendChild(head);
     cell.appendChild(dz);
 
-    // drag events for assigning
+    // === Mobile tap to edit (works on desktop too) ===
+    cell.addEventListener('click', ()=>{
+      if(window.matchMedia('(pointer: coarse)').matches || window.innerWidth <= 900){
+        openEditor(ym, dateISO);
+      }
+    });
+
+    // === Drag & drop for desktop ===
     dz.addEventListener('dragover', (e)=>{ e.preventDefault(); dz.classList.add('highlight'); });
     dz.addEventListener('dragleave', ()=>dz.classList.remove('highlight'));
     dz.addEventListener('drop', (e)=>{
@@ -257,27 +302,18 @@ function buildCalendarGrid(dt){
       const ref = store[ym][dateISO];
 
       if(type==='couple'){
-        // enforce: couple can go out only once per this month
+        // One outing per couple per month
         const monthEntries = store[ym];
         const already = Object.entries(monthEntries).some(([d,val])=> val && val.coupleKey === fromCouple && d !== dateISO);
-        if(already){
-          const coupleName = COUPLES.find(c=>c.key===fromCouple).name;
-          toast(`${coupleName} already has a date night this month.`, true); return;
-        }
+        if(already){ const coupleName = COUPLES.find(c=>c.key===fromCouple).name; toast(`${coupleName} already has a date night this month.`, true); return; }
         ref.coupleKey = fromCouple; // set couple
         // reset sitter if sitter belongs to the same couple
-        if(ref.sitterName){
-          const sitterKey = findCoupleKeyByPartner(ref.sitterName);
-          if(sitterKey === fromCouple) ref.sitterName = null;
-        }
+        if(ref.sitterName){ const sitterKey = findCoupleKeyByPartner(ref.sitterName); if(sitterKey === fromCouple) ref.sitterName = null; }
         save(); rebuildCell();
       } else if(type==='partner'){
         if(!ref.coupleKey){ toast('Assign a date-night couple first.', true); return; }
         const sitterKey = findCoupleKeyByPartner(name);
-        if(!sitterKey || sitterKey === ref.coupleKey){
-          const coupleName = COUPLES.find(c=>c.key===ref.coupleKey).name;
-          toast(`Invalid sitter: must be from a different couple than ${coupleName}.`, true); return;
-        }
+        if(!sitterKey || sitterKey === ref.coupleKey){ const coupleName = COUPLES.find(c=>c.key===ref.coupleKey).name; toast(`Invalid sitter: must be from a different couple than ${coupleName}.`, true); return; }
         ref.sitterName = name; save(); rebuildCell();
       }
     });
@@ -285,7 +321,6 @@ function buildCalendarGrid(dt){
     return cell;
   };
 
-  // pad with blanks before first day
   for(let i=0;i<startOffset;i++) cal.appendChild(makeCell(null));
   for(let d=1; d<=totalDays; d++) cal.appendChild(makeCell(d));
   const used = 7 + startOffset + totalDays; // 7 headers + cells
@@ -322,19 +357,90 @@ function enableGlobalDrag(){
   });
 }
 
+// =================== MOBILE EDITOR (bottom sheet) ===================
+let edState = { ym:null, dateISO:null, coupleKey:null, sitterName:null };
+function openEditor(ym, dateISO){
+  edState.ym = ym; edState.dateISO = dateISO;
+  if(!store[ym]) store[ym] = {};
+  const ref = store[ym][dateISO] || {coupleKey:null, sitterName:null};
+  edState.coupleKey = ref.coupleKey; edState.sitterName = ref.sitterName;
+  document.getElementById('edTitle').textContent = `Edit ${dateISO}`;
+
+  // Build couple buttons
+  const cwrap = document.getElementById('edCouples'); cwrap.innerHTML='';
+  COUPLES.forEach(c=>{
+    const b = document.createElement('div'); b.className='pill btn'; b.textContent=c.name; b.style.background=c.colorBg; b.style.border=`1px solid ${c.colorBr}`;
+    if(edState.coupleKey===c.key) b.style.outline = '2px solid #0ea5a5';
+    b.addEventListener('click', ()=>{ edState.coupleKey=c.key; buildSitters(); highlightCouples(); });
+    cwrap.appendChild(b);
+  });
+  function highlightCouples(){ [...cwrap.children].forEach((el,i)=>{ el.style.outline = (COUPLES[i].key===edState.coupleKey)?'2px solid #0ea5a5':'none'; }); }
+
+  // Build sitter buttons (filtered)
+  function buildSitters(){
+    const swrap = document.getElementById('edSitters'); swrap.innerHTML='';
+    const allowed = edState.coupleKey? COUPLES.filter(c=>c.key!==edState.coupleKey) : COUPLES;
+    allowed.forEach(c=> c.partners.forEach(p=>{
+      const b = document.createElement('div'); b.className='pill btn'; b.textContent=p;
+      if(edState.sitterName===p) b.style.outline = '2px solid #0ea5a5';
+      b.addEventListener('click', ()=>{ edState.sitterName=p; buildSitters(); });
+      swrap.appendChild(b);
+    }));
+  }
+  buildSitters();
+
+  document.getElementById('editor').classList.add('open');
+}
+
+(function editorWiring(){
+  document.getElementById('edClose').addEventListener('click', ()=> document.getElementById('editor').classList.remove('open'));
+  document.getElementById('edClear').addEventListener('click', ()=>{
+    if(!store[edState.ym]) store[edState.ym]={};
+    store[edState.ym][edState.dateISO] = {coupleKey:null, sitterName:null}; save();
+    document.getElementById('editor').classList.remove('open');
+    const dt = new Date(Date.UTC(Number(edState.ym.slice(0,4)), Number(edState.ym.slice(5))-1, 1));
+    buildCalendarGrid(dt);
+  });
+  document.getElementById('edSave').addEventListener('click', ()=>{
+    if(!store[edState.ym]) store[edState.ym]={};
+    const monthEntries = store[edState.ym];
+    if(edState.coupleKey){
+      const exists = Object.entries(monthEntries).some(([d,val])=> val && val.coupleKey === edState.coupleKey && d !== edState.dateISO);
+      if(exists){ const name = COUPLES.find(c=>c.key===edState.coupleKey).name; toast(`${name} already has a date night this month.`, true); return; }
+    }
+    // Validate sitter/couple difference
+    if(edState.sitterName && edState.coupleKey){
+      const sitterKey = findCoupleKeyByPartner(edState.sitterName);
+      if(sitterKey === edState.coupleKey){ const name = COUPLES.find(c=>c.key===edState.coupleKey).name; toast(`Invalid sitter: must be from a different couple than ${name}.`, true); return; }
+    }
+    store[edState.ym][edState.dateISO] = { coupleKey: edState.coupleKey||null, sitterName: edState.sitterName||null };
+    save(); document.getElementById('editor').classList.remove('open');
+    const dt = new Date(Date.UTC(Number(edState.ym.slice(0,4)), Number(edState.ym.slice(5))-1, 1));
+    buildCalendarGrid(dt);
+  });
+})();
+
 // =================== INIT ===================
+function offsetYM(ym, delta){
+  const y = Number(ym.slice(0,4)); const m = Number(ym.slice(5));
+  const d = new Date(Date.UTC(y, m-1+delta, 1));
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth()+1)}`;
+}
+function setMonth(ym){
+  const picker = document.getElementById('monthPicker');
+  picker.value = ym;
+  const dt = new Date(Date.UTC(Number(ym.slice(0,4)), Number(ym.slice(5))-1, 1));
+  buildCalendarGrid(dt);
+}
 (function init(){
   renderChips(); enableGlobalDrag();
   const picker = document.getElementById('monthPicker');
   const now = new Date();
   const y = now.getFullYear(); const m = now.getMonth()+1; picker.value = `${y}-${pad2(m)}`;
   setMonth(picker.value);
-
   document.getElementById('prevBtn').addEventListener('click', ()=> setMonth(offsetYM(picker.value, -1)) );
   document.getElementById('nextBtn').addEventListener('click', ()=> setMonth(offsetYM(picker.value, +1)) );
-
   picker.addEventListener('change', ()=> setMonth(picker.value) );
-
   document.getElementById('clearMonth').addEventListener('click', ()=>{
     const ym = picker.value; if (!store[ym]) return; if(!confirm('Clear all assignments for this month?')) return;
     delete store[ym]; save(); setMonth(ym);
