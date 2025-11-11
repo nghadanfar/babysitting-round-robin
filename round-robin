@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Babysitting Round Robin — Addadas / Bonesteeles / Bradys</title>
+<style>
+  :root { --bg:#0f172a; --panel:#111827; --muted:#94a3b8; --text:#e5e7eb; --accent:#22c55e; --chip:#1f2937; }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial;background:var(--bg);color:var(--text);}
+  header{padding:24px 20px;border-bottom:1px solid #222;}
+  h1{margin:0;font-size:24px;letter-spacing:.3px;}
+  main{max-width:1100px;margin:0 auto;padding:24px 16px 48px;display:grid;gap:20px;}
+  .grid{display:grid;gap:16px;}
+  .grid.cols{grid-template-columns:repeat(2,minmax(0,1fr));}
+  .panel{background:var(--panel);border:1px solid #1f2937;border-radius:12px;padding:16px;}
+  .panel h2{margin:0 0 12px;font-size:18px;}
+  label{font-size:13px;color:var(--muted);display:block;margin:10px 0 4px;}
+  input,select{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #30363d;background:#0b1220;color:var(--text);outline:none;}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .btn{display:inline-flex;align-items:center;gap:8px;background:var(--accent);color:#032e17;border:0;padding:10px 14px;border-radius:10px;font-weight:600;cursor:pointer;}
+  .btn.secondary{background:#374151;color:#e5e7eb;}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;}
+  .card{background:#0b1220;border:1px solid #1f2937;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px;}
+  .chip{display:inline-flex;align-items:center;gap:6px;background:var(--chip);border:1px solid #243244;padding:4px 8px;border-radius:999px;font-size:12px;color:#cbd5e1;}
+  .divider{height:1px;background:#1f2937;margin:4px 0;}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+  table{width:100%;border-collapse:collapse;}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #1f2937;font-size:14px;}
+  th{color:#cbd5e1;font-weight:600;}
+  .footer-note{color:var(--muted);font-size:12px;}
+  @media (max-width:920px){.grid.cols{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+<header><h1>Babysitting Round Robin (3 couples • 1 sitter per date night)</h1></header>
+<main>
+  <section class="grid cols">
+    <div class="panel">
+      <h2>Participants</h2>
+      <div id="couples"></div>
+      <div class="actions"><button class="btn secondary" id="resetNames">Reset to Our Names</button></div>
+    </div>
+    <div class="panel">
+      <h2>Schedule Settings</h2>
+      <label>Start month</label>
+      <input type="month" id="startMonth" />
+      <div class="row">
+        <div>
+          <label>How many months?</label>
+          <input type="number" id="months" min="1" step="1" value="6" />
+        </div>
+        <div>
+          <label>Time (e.g., 18:00–22:00)</label>
+          <input type="text" id="timeRange" value="18:00–22:00" />
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Day of week</label>
+          <select id="weekday">
+            <option selected>Friday</option>
+            <option>Saturday</option>
+            <option>Thursday</option>
+            <option>Wednesday</option>
+          </select>
+        </div>
+        <div>
+          <label>Weeks of month (comma-separated)</label>
+          <input type="text" id="weeks" value="1,2,3" />
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="generate">Generate Schedule</button>
+        <button class="btn secondary" id="exportCsv">Export CSV</button>
+      </div>
+      <p class="footer-note">Each selected week creates a date night that month (e.g., 1st/2nd/3rd Friday). Rotation per month: Addadas → sitter is Bonesteeles; Bonesteeles → sitter is Bradys; Bradys → sitter is Addadas.</p>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Schedule</h2>
+    <div id="cards" class="cards"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Fairness Dashboard</h2>
+    <div id="stats"></div>
+  </section>
+</main>
+
+<script>
+  // ---------- Utilities ----------
+  const WEEKDAYS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  function nthWeekday(year, monthIndex, weekdayName, nth) {
+    const targetDow = WEEKDAYS.indexOf(weekdayName);
+    const first = new Date(Date.UTC(year, monthIndex, 1));
+    const firstDow = first.getUTCDay();
+    let day = 1 + ((targetDow - firstDow + 7) % 7) + (nth - 1) * 7;
+    const daysInMonth = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+    if (day > daysInMonth) {
+      // If nth occurrence doesn't exist, fall back to last occurrence
+      const last = new Date(Date.UTC(year, monthIndex + 1, 0));
+      let back = (last.getUTCDay() - targetDow + 7) % 7;
+      day = last.getUTCDate() - back;
+    }
+    return new Date(Date.UTC(year, monthIndex, day));
+  }
+  function fmtMonth(date) { return date.toLocaleString('default', { month: 'long', year: 'numeric', timeZone: 'UTC' }); }
+  function esc(s){ return String(s ?? "").trim(); }
+
+  // ---------- Model (your names) ----------
+  function ourData() {
+    return [
+      { coupleName:"Addadas", partners:["Nour Ghadanfar","Tariq Addada"] },   // A
+      { coupleName:"Bonesteeles", partners:["Aranza Gonzalez","Grant Bonesteele"] },   // B
+      { coupleName:"Bradys", partners:["Lubna Alansari","Travis Brady"] } // C
+    ];
+  }
+  let couples = structuredClone(ourData());
+
+  // ---------- UI: Participants ----------
+  const couplesDiv = document.getElementById('couples');
+  function renderCouples() {
+    couplesDiv.innerHTML = "";
+    couples.forEach((c, idx) => {
+      const wrap = document.createElement('div');
+      wrap.className = "panel";
+      wrap.style.background = "#0b1220";
+      wrap.style.border = "1px dashed #243244";
+      wrap.style.padding = "12px";
+      wrap.style.marginBottom = "10px";
+      wrap.innerHTML = `
+        <div class="row">
+          <div>
+            <label>Couple ${idx+1} display name</label>
+            <input data-idx="${idx}" data-field="coupleName" value="${esc(c.coupleName)}" />
+          </div>
+          <div></div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Partner A</label>
+            <input data-idx="${idx}" data-field="p0" value="${esc(c.partners[0])}" />
+          </div>
+          <div>
+            <label>Partner B</label>
+            <input data-idx="${idx}" data-field="p1" value="${esc(c.partners[1])}" />
+          </div>
+        </div>
+      `;
+      couplesDiv.appendChild(wrap);
+    });
+    couplesDiv.querySelectorAll('input').forEach(inp=>{
+      inp.addEventListener('input', e=>{
+        const i = Number(e.target.dataset.idx);
+        const f = e.target.dataset.field;
+        if (f === 'coupleName') couples[i].coupleName = e.target.value;
+        if (f === 'p0') couples[i].partners[0] = e.target.value;
+        if (f === 'p1') couples[i].partners[1] = e.target.value;
+      });
+    });
+  }
+  renderCouples();
+  document.getElementById('resetNames').onclick = ()=>{ couples = structuredClone(ourData()); renderCouples(); };
+
+  // ---------- Core Scheduling ----------
+  // Cycle rule within each month: A's sitter = B, B's sitter = C, C's sitter = A  (index+1 mod 3)
+  function generateSchedule({startMonth, months, weekday, weeksCsv, timeRange}) {
+    if (!startMonth) throw new Error("Pick a start month.");
+    const [sy, sm] = startMonth.split('-').map(Number); // sm 1-12
+    const weeks = weeksCsv.split(',').map(s=>parseInt(s.trim(),10)).filter(n=>Number.isFinite(n) && n>=1 && n<=5);
+    if (weeks.length === 0) throw new Error("Specify at least one week number (1–5).");
+
+    const babysitterNext = [0,0,0]; // which partner in each couple is up next to babysit (0 or 1)
+    const events = [];
+
+    for (let m = 0; m < months; m++) {
+      const year = sy + Math.floor((sm-1 + m) / 12);
+      const monthIndex = ((sm-1 + m) % 12);
+
+      // Order per your example: Addadas date night first, then Bonesteeles, then Bradys
+      for (let dnc = 0; dnc < 3; dnc++) {
+        const weekOrdinal = weeks[dnc % weeks.length]; // if fewer than 3 weeks picked, cycle them
+        const when = nthWeekday(year, monthIndex, weekday, weekOrdinal);
+
+        const sitterCoupleIdx = (dnc + 1) % 3;
+        const sitterPartnerIdx = babysitterNext[sitterCoupleIdx] % 2; // alternate adult inside sitter couple
+        babysitterNext[sitterCoupleIdx]++;
+
+        const dateNightCouple = couples[dnc];
+        const sitterCouple = couples[sitterCoupleIdx];
+        const sitterName = sitterCouple.partners[sitterPartnerIdx];
+
+        events.push({
+          monthKey: `${year}-${String(monthIndex+1).padStart(2,'0')}`,
+          when, timeRange,
+          dateNightCoupleIdx: dnc,
+          dateNightCoupleName: dateNightCouple.coupleName,
+          sitter: { name: sitterName, coupleName: sitterCouple.coupleName }
+        });
+      }
+    }
+    events.sort((a,b)=>a.when - b.when || a.dateNightCoupleIdx - b.dateNightCoupleIdx);
+    return events;
+  }
+
+  // ---------- Visualization ----------
+  const cards = document.getElementById('cards');
+  const statsDiv = document.getElementById('stats');
+
+  function renderCards(events) {
+    cards.innerHTML = "";
+    events.forEach(ev=>{
+      const card = document.createElement('div');
+      card.className = "card";
+      card.innerHTML = `
+        <div class="chip mono">${fmtMonth(ev.when)}</div>
+        <div><strong>Date night:</strong> ${esc(ev.dateNightCoupleName)}</div>
+        <div class="divider"></div>
+        <div><strong>Babysitter:</strong> ${esc(ev.sitter.name)} <span class="footer-note">(${esc(ev.sitter.coupleName)})</span></div>
+        <div class="divider"></div>
+        <div class="footer-note">Target night: ${ev.when.toLocaleDateString(undefined,{weekday:'long', month:'short', day:'numeric'})} • ${esc(ev.timeRange)}</div>
+      `;
+      cards.appendChild(card);
+    });
+  }
+
+  function renderStats(events) {
+    const personCounts = new Map(); // name -> {dateNights, babysits}
+    const coupleCounts = new Map(); // couple -> {dateNights, babysits}
+    function ensure(map, key){ if(!map.has(key)) map.set(key,{dateNights:0,babysits:0}); return map.get(key); }
+
+    events.forEach(ev=>{
+      const idx = ev.dateNightCoupleIdx;
+      const pA = couples[idx].partners[0], pB = couples[idx].partners[1];
+      ensure(personCounts,pA).dateNights++; ensure(personCounts,pB).dateNights++;
+      ensure(coupleCounts, couples[idx].coupleName).dateNights++;
+
+      ensure(personCounts, ev.sitter.name).babysits++;
+      ensure(coupleCounts, ev.sitter.coupleName).babysits++;
+    });
+
+    const peopleRows = [...personCounts.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
+    const coupleRows = [...coupleCounts.entries()].sort((a,b)=>a[0].localeCompare(b[0]));
+
+    const peopleTable = `
+      <h3>Per person</h3>
+      <table>
+        <thead><tr><th>Person</th><th>Date nights</th><th>Babysitting</th></tr></thead>
+        <tbody>${peopleRows.map(([n,c])=>`<tr><td>${esc(n)}</td><td>${c.dateNights}</td><td>${c.babysits}</td></tr>`).join('')}</tbody>
+      </table>`;
+    const couplesTable = `
+      <h3>Per couple</h3>
+      <table>
+        <thead><tr><th>Couple</th><th>Date nights</th><th>Babysitting assignments</th></tr></thead>
+        <tbody>${coupleRows.map(([n,c])=>`<tr><td>${esc(n)}</td><td>${c.dateNights}</td><td>${c.babysits}</td></tr>`).join('')}</tbody>
+      </table>`;
+
+    statsDiv.innerHTML = peopleTable + couplesTable;
+  }
+
+  // ---------- Export ----------
+  function toCsv(events) {
+    const rows = [
+      ["Month","Date Night Couple","Sitter (Name)","Sitter (Couple)","Target Night","Time"],
+      ...events.map(ev=>[
+        fmtMonth(ev.when),
+        ev.dateNightCoupleName,
+        ev.sitter.name,
+        ev.sitter.coupleName,
+        ev.when.toLocaleDateString(undefined,{weekday:'long', month:'short', day:'numeric'}),
+        ev.timeRange
+      ])
+    ];
+    return rows.map(r=>r.map(cell=>{
+      const s = String(cell ?? "");
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+    }).join(",")).join("\n");
+  }
+
+  // ---------- Wire up ----------
+  const startMonth = document.getElementById('startMonth');
+  const months = document.getElementById('months');
+  const weekday = document.getElementById('weekday');
+  const weeks = document.getElementById('weeks');
+  const timeRange = document.getElementById('timeRange');
+
+  (function initDefaults(){
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth()+1).padStart(2,'0');
+    startMonth.value = `${y}-${m}`;
+  })();
+
+  document.getElementById('generate').onclick = () => {
+    try {
+      const events = generateSchedule({
+        startMonth: startMonth.value,
+        months: Math.max(1, Number(months.value||6)),
+        weekday: weekday.value,
+        weeksCsv: weeks.value,
+        timeRange: timeRange.value
+      });
+      renderCards(events);
+      renderStats(events);
+      window._latestEvents = events;
+    } catch (e) {
+      alert(e.message || String(e));
+    }
+  };
+
+  document.getElementById('exportCsv').onclick = () => {
+    if (!window._latestEvents || !window._latestEvents.length) {
+      alert("Generate a schedule first.");
+      return;
+    }
+    const csv = toCsv(window._latestEvents);
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = "babysitting-round-robin.csv";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  };
+
+  // Auto-generate once on load
+  document.getElementById('generate').click();
+</script>
+</body>
+</html>
